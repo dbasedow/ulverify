@@ -1,5 +1,5 @@
 [package]
-name = "ulv"
+name = "ulverify"
 version = "0.1.0"
 authors = ["Daniel Basedow <daniel.basedow@gmail.com>"]
 edition = "2018"
