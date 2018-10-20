@@ -9,8 +9,8 @@ extern crate tokio;
 #[macro_use]
 extern crate serde_derive;
 
+use futures::Future;
 use http::Uri;
-use hyper::rt::{self, Future};
 use std::env;
 
 fn main() {
@@ -35,7 +35,7 @@ fn main() {
         Ok(())
     });
 
-    rt::run(p);
+    tokio::run(p);
 }
 
 mod aasa;

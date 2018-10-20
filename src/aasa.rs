@@ -165,7 +165,7 @@ pub fn fetch_and_check(
 
             res.into_body()
                 .fold(vec![].writer(), |mut buf, chunk| {
-                    buf.write_all(&chunk);
+                    buf.write_all(&chunk).expect("failed writing");
                     Ok::<_, hyper::Error>(buf)
                 })
                 .map_err(|_| AppError::AASANotFound)
