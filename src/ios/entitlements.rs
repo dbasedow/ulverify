@@ -1,19 +1,59 @@
 use mach_object::{LoadCommand, OFile, CPU_TYPE_ARM64};
 use plist::Plist;
+use std::fs::File;
 use std::io::{Cursor, Read, Write};
 
-/*
-fn main() {
-    let file_name = env::args().last().unwrap();
+#[derive(Debug)]
+pub struct Entitlements {
+    application_identifier: Option<String>,
+    associated_domains: Option<Vec<String>>,
+}
+
+impl Entitlements {
+    fn new() -> Entitlements {
+        Entitlements {
+            application_identifier: None,
+            associated_domains: None,
+        }
+    }
+}
+
+pub fn extract_info_from_file(file_name: &str) -> Option<Entitlements> {
     let mut fp = File::open(file_name).unwrap();
     let mut buf = Vec::with_capacity(100);
-    let size = fp.read_to_end(&mut buf).unwrap();
-
-    extract_entitlements_plist(&buf);
+    fp.read_to_end(&mut buf).expect("error reading file");
+    extract_info_from_plist(&buf)
 }
-*/
 
-pub fn extract_entitlements_plist(buf: &[u8]) {
+pub fn extract_info_from_plist(buf: &[u8]) -> Option<Entitlements> {
+    if let Some(plist) = extract_entitlements_plist(&buf) {
+        let cursor = Cursor::new(plist);
+        if let Ok(Plist::Dictionary(parsed)) = Plist::read(cursor) {
+            let mut entitlements = Entitlements::new();
+
+            if let Some(Plist::String(app_id)) = parsed.get("application-identifier") {
+                entitlements.application_identifier = Some(app_id.clone());
+            }
+
+            if let Some(Plist::Array(assoc_doms)) =
+                parsed.get("com.apple.developer.associated-domains")
+            {
+                let mut doms: Vec<String> = Vec::new();
+                for dom in assoc_doms {
+                    if let Plist::String(dom) = dom {
+                        doms.push(dom.clone());
+                    }
+                }
+                entitlements.associated_domains = Some(doms);
+            }
+
+            return Some(entitlements);
+        }
+    }
+    None
+}
+
+fn extract_entitlements_plist<'a>(buf: &'a [u8]) -> Option<&'a [u8]> {
     let mut cur = Cursor::new(&buf[..]);
     if let OFile::FatFile { ref files, .. } = OFile::parse(&mut cur).unwrap() {
         for (arch, fil) in files {
@@ -29,9 +69,7 @@ pub fn extract_entitlements_plist(buf: &[u8]) {
                                     let start = offset;
                                     // the length contains the 4 magic bytes and the 4 length bytes
                                     let end = offset + length - 8;
-                                    let cursor = Cursor::new(&data[start..end]);
-                                    let pl = Plist::read(cursor);
-                                    println!("{:?}", pl);
+                                    return Some(&data[start..end]);
                                 }
                             }
                             _ => {}
@@ -41,6 +79,7 @@ pub fn extract_entitlements_plist(buf: &[u8]) {
             }
         }
     }
+    None
 }
 
 fn find_codesign_plist(buf: &[u8]) -> Option<(usize, usize)> {
