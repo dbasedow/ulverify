@@ -1,3 +1,4 @@
+extern crate clap;
 extern crate hyper;
 extern crate hyper_tls;
 extern crate mach_object;
@@ -12,18 +13,74 @@ extern crate tokio;
 extern crate serde_derive;
 
 use self::ios::aasa;
+use self::ios::entitlements;
+use clap::{App, Arg, SubCommand};
 use futures::Future;
 use http::Uri;
 use std::env;
+use std::process;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let url: Uri = args.last().unwrap().parse().expect("invalid url");
+    let matches = App::new("Universal Link Validator")
+        .version("0.1")
+        .author("Daniel Basedow")
+        .arg(
+            Arg::with_name("ios-executable")
+                .long("ios-executable")
+                .value_name("FILE")
+                .help("iOS executable to check against")
+                .takes_value(true),
+        )
+        /*
+        .arg(
+            Arg::with_name("apk")
+                .long("apk")
+                .value_name("FILE")
+                .help("APK to check against")
+                .takes_value(true),
+        )
+        */
+        .arg(
+            Arg::with_name("ipa")
+                .long("ipa")
+                .value_name("FILE")
+                .help("IPA to check against")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("URL")
+                .value_name("URL")
+                .help("URL to check against")
+                .required(true)
+                .index(1),
+        )
+        .get_matches();
+
+    let url = matches.value_of("URL").unwrap();
+    let url: Uri = url.parse().expect("invalid url");
+
     if url.host().is_none() {
         panic!("URL must contain a host");
     }
 
-    println!("running check for {}", url);
+    println!("Running checks for link: {}", url);
+
+    if let Some(fname) = matches.value_of("ios-executable") {
+        if let Some(ents) = entitlements::extract_info_from_file(fname) {
+            let domain = url.host().unwrap();
+            if !ents.matches_applink_domain(domain) {
+                println!("The entitlements in the supplied executable do not claim {} as an 'applinks' domain.", domain);
+                println!("Found:");
+                for d in ents.associated_domains {
+                    println!("  {}", d);
+                }
+                println!("");
+                println!("Missing:");
+                println!("  applinks:{}", domain);
+                process::exit(1);
+            }
+        }
+    }
 
     let candidate_a = aasa::well_known_aasa_from_url(&url);
     println!(

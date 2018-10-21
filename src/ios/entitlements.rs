@@ -1,20 +1,30 @@
-use mach_object::{LoadCommand, OFile, CPU_TYPE_ARM64};
+use mach_object::{LoadCommand, OFile};
 use plist::Plist;
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
 
 #[derive(Debug)]
 pub struct Entitlements {
-    application_identifier: Option<String>,
-    associated_domains: Option<Vec<String>>,
+    pub application_identifier: Option<String>,
+    pub associated_domains: Vec<String>,
 }
 
 impl Entitlements {
     fn new() -> Entitlements {
         Entitlements {
             application_identifier: None,
-            associated_domains: None,
+            associated_domains: Vec::new(),
         }
+    }
+
+    pub fn matches_applink_domain(&self, domain: &str) -> bool {
+        for ad in &self.associated_domains {
+            if ad.starts_with("applinks:") && &ad[9..] == domain {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -38,13 +48,11 @@ pub fn extract_info_from_plist(buf: &[u8]) -> Option<Entitlements> {
             if let Some(Plist::Array(assoc_doms)) =
                 parsed.get("com.apple.developer.associated-domains")
             {
-                let mut doms: Vec<String> = Vec::new();
                 for dom in assoc_doms {
                     if let Plist::String(dom) = dom {
-                        doms.push(dom.clone());
+                        entitlements.associated_domains.push(dom.clone());
                     }
                 }
-                entitlements.associated_domains = Some(doms);
             }
 
             return Some(entitlements);
