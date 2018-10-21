@@ -55,30 +55,38 @@ pub fn extract_info_from_plist(buf: &[u8]) -> Option<Entitlements> {
 
 fn extract_entitlements_plist<'a>(buf: &'a [u8]) -> Option<&'a [u8]> {
     let mut cur = Cursor::new(&buf[..]);
-    if let OFile::FatFile { ref files, .. } = OFile::parse(&mut cur).unwrap() {
-        for (arch, fil) in files {
-            if arch.cputype == CPU_TYPE_ARM64 {
-                if let OFile::MachFile { ref commands, .. } = fil {
-                    for cmd in commands {
-                        match cmd.command() {
-                            LoadCommand::CodeSignature(ldcmd) => {
-                                let start = ldcmd.off as usize;
-                                let end = ldcmd.off as usize + ldcmd.size as usize;
-                                let data = &buf[start..end];
-                                if let Some((offset, length)) = find_codesign_plist(data) {
-                                    let start = offset;
-                                    // the length contains the 4 magic bytes and the 4 length bytes
-                                    let end = offset + length - 8;
-                                    return Some(&data[start..end]);
-                                }
-                            }
-                            _ => {}
-                        }
+
+    let mach_file = match OFile::parse(&mut cur).unwrap() {
+        OFile::FatFile { files, .. } => {
+            if files.len() == 0 {
+                panic!("FatFile with 0 architectures");
+            }
+            // return first MachFile from FatFile
+            files[0].1.clone()
+        }
+        f @ OFile::MachFile { .. } => f,
+        t => panic!("unknown Mach-O filetype {:?}", t),
+    };
+
+    if let OFile::MachFile { ref commands, .. } = mach_file {
+        for cmd in commands {
+            match cmd.command() {
+                LoadCommand::CodeSignature(ldcmd) => {
+                    let start = ldcmd.off as usize;
+                    let end = ldcmd.off as usize + ldcmd.size as usize;
+                    let data = &buf[start..end];
+                    if let Some((offset, length)) = find_codesign_plist(data) {
+                        let start = offset;
+                        // the length contains the 4 magic bytes and the 4 length bytes
+                        let end = offset + length - 8;
+                        return Some(&data[start..end]);
                     }
                 }
+                _ => {}
             }
         }
     }
+
     None
 }
 
