@@ -31,6 +31,13 @@ fn main() {
                 .help("iOS executable to check against")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("bundle-identifier")
+                .long("bundle-id")
+                .value_name("ID")
+                .help("Bundle identifier to match against")
+                .takes_value(true),
+        )
         /*
         .arg(
             Arg::with_name("apk")
@@ -63,6 +70,9 @@ fn main() {
         panic!("URL must contain a host");
     }
 
+    let mut bundle_identifier = matches.value_of("bundle-identifier");
+    let mut team_id: Option<String> = None;
+
     println!("Running checks for link: {}", url);
 
     if let Some(fname) = matches.value_of("ios-executable") {
@@ -78,6 +88,20 @@ fn main() {
                 println!("Missing:");
                 println!("  applinks:{}", domain);
                 process::exit(1);
+            }
+
+            if let Some(app_id) = ents.application_identifier {
+                if let Some(pos) = app_id.find('.') {
+                    team_id = Some(app_id[..pos].to_string());
+                    if let Some(bundle_id) = bundle_identifier {
+                        if &app_id[pos + 1..] != bundle_id {
+                            println!("Supplied bundle identifier does not match bundle identifier from executable: {}", &app_id[pos + 1..]);
+                            process::exit(1);
+                        }
+                    } else {
+                        bundle_identifier = Some(&app_id[pos + 1..]);
+                    }
+                }
             }
         }
     }
