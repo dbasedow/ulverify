@@ -1,3 +1,4 @@
+extern crate zip;
 extern crate clap;
 extern crate hyper;
 extern crate hyper_tls;
@@ -112,10 +113,8 @@ fn main() {
         candidate_a
     );
 
-    let p = aasa::fetch_and_check(candidate_a, url.path()).and_then(|matches| {
-        for m in matches {
-            println!("{}", m);
-        }
+    let p = aasa::fetch_and_check(candidate_a, url.path()).and_then(|check| {
+        println!("{:?}", check);
         Ok(())
     });
 

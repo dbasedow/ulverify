@@ -9,31 +9,67 @@ use regex::Regex;
 use regex_syntax::is_meta_character;
 use std::io::Write;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug)]
+pub struct Match {
+    bundle_id: String,
+    pattern: String,
+}
+
+#[derive(Debug)]
+pub struct AASACheck {
+    //Input
+    url: Uri,
+    paths_to_check: Vec<String>,
+
+    //Results
+    ok_response: Option<bool>,
+    content_type: Option<String>,
+    body: Vec<u8>,
+    file_size: Option<usize>,
+    parsed: Option<Box<AppleAppSiteAssociation>>,
+    parse_error: Option<bool>,
+    matches: Option<Vec<Match>>,
+}
+
+impl AASACheck {
+    fn new(url: Uri, paths_to_check: Vec<String>) -> Self {
+        Self {
+            url,
+            paths_to_check,
+            ok_response: None,
+            content_type: None,
+            body: vec![],
+            file_size: None,
+            parsed: None,
+            parse_error: None,
+            matches: None,
+        }
+    }
+
+    fn content_type_json(&self) -> bool {
+        if let Some(ref content_type) = self.content_type {
+            content_type == "application/json"
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AppleAppSiteAssociation {
     applinks: AppLinks,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AppLinks {
     apps: Vec<String>,
     details: Vec<AppLinkDetail>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AppLinkDetail {
     appID: String,
     paths: Vec<String>,
-}
-
-#[derive(Debug)]
-pub enum AppError {
-    AASANotFound,
-    ContentTypeNotSet,
-    ContentTypeWrong(String),
-    FileTooLarge(usize),
-    InvalidFileFormat,
-    NoMatchingPattern,
 }
 
 pub fn aasa_match_path(pattern: &str, path: &str) -> bool {
@@ -137,78 +173,80 @@ pub fn aasa_match(app: &AppLinkDetail, path: &str) -> bool {
 pub fn fetch_and_check(
     aasa_uri: Uri,
     path_to_check: &str,
-) -> impl Future<Item = Vec<String>, Error = ()> {
+) -> impl Future<Item = AASACheck, Error = ()> {
     let https = HttpsConnector::new(4).unwrap();
     let client = Client::builder().build::<_, hyper::Body>(https);
     let path_to_check = path_to_check.to_string();
+    let mut check = AASACheck::new(aasa_uri.clone(), vec![path_to_check.clone()]);
 
     client
         .get(aasa_uri)
-        .then(|res| {
+        .then(move |res| {
             if let Err(err) = res {
-                return Err(AppError::AASANotFound);
+                check.ok_response = Some(false);
+                return Err(check);
             }
 
             let res = res.unwrap();
 
             if res.status() != status::StatusCode::OK {
-                return Err(AppError::AASANotFound);
+                check.ok_response = Some(false);
+                return Err(check);
             }
 
-            match res.headers().get("Content-Type") {
-                Some(s) if s.as_bytes() != b"application/json" => {
-                    return Err(AppError::ContentTypeWrong(s.to_str().unwrap().into()))
+            if let Some(header) = res.headers().get("Content-Type") {
+                if let Ok(s) = header.to_str() {
+                    check.content_type = Some(s.to_string());
                 }
-                None => return Err(AppError::ContentTypeNotSet),
-                _ => {}
             }
 
-            res.into_body()
-                .fold(vec![].writer(), |mut buf, chunk| {
+            let buf = Vec::new();
+
+            let data = res
+                .into_body()
+                .fold(buf.writer(), |mut buf, chunk| {
                     buf.write_all(&chunk).expect("failed writing");
                     Ok::<_, hyper::Error>(buf)
                 })
-                .map_err(|_| AppError::AASANotFound)
-                .wait()
-        })
-        .and_then(|res| {
-            if res.get_ref().len() > 128_000 {
-                return Err(AppError::FileTooLarge(res.get_ref().len()));
+                .wait();
+            
+            if data.is_err() {
+                return Err(check);
             }
-            Ok(res)
-        })
-        .and_then(
-            |data| match serde_json::from_slice::<AppleAppSiteAssociation>(data.get_ref()) {
-                Ok(aasa) => Ok(aasa),
-                Err(e) => Err(AppError::InvalidFileFormat),
-            },
-        )
-        .and_then(move |aasa| {
-            let mut res: Vec<String> = Vec::new();
-            for app in aasa.applinks.details {
-                if aasa_match(&app, &path_to_check) {
-                    res.push(app.appID.clone());
+
+            let data = data.unwrap();
+
+            match serde_json::from_slice::<AppleAppSiteAssociation>(data.get_ref()) {
+                Ok(aasa) => {
+                    check.parsed = Some(Box::new(aasa));
+                }
+                Err(_) => {
+                    check.parse_error = Some(true);
                 }
             }
-            if res.len() == 0 {
-                return Err(AppError::NoMatchingPattern);
-            }
-            Ok(res)
+
+            Ok(check)
         })
-        .map_err(|err| match err {
-            AppError::AASANotFound => println!("Apple app site association not found"),
-            AppError::ContentTypeWrong(s) => println!(
-                "Content-Type header should be 'application/json' but was '{}'",
-                s
-            ),
-            AppError::ContentTypeNotSet => {
-                println!("Content-Type header not set MUST be 'application/json'")
+        // possibly check size here and abort further checks
+        .and_then(move |mut check| {
+            let mut res: Vec<Match> = Vec::new();
+            if let Some(ref parsed) = check.parsed {
+                for app in &parsed.applinks.details {
+                    for path_to_check in &check.paths_to_check {
+                        if aasa_match(&app, &path_to_check[..]) {
+                            let m = Match {
+                                bundle_id: app.appID.clone(),
+                                pattern: String::new(),
+                            };
+                            res.push(m);
+                        }
+                    }
+                }
             }
-            AppError::FileTooLarge(s) => println!(
-                "The Apple app site association file is too large: {} bytes but max is 128KB",
-                s
-            ),
-            AppError::InvalidFileFormat => println!("Failed parsing the App site association file"),
-            AppError::NoMatchingPattern => println!("No matching pattern found"),
+            check.matches = Some(res);
+            Ok(check)
+        })
+        .map_err(|err| {
+            println!("{:?}", err);
         })
 }
