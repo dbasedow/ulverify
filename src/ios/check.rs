@@ -1,19 +1,21 @@
 use clap::ArgMatches;
-use crate::ios::aasa::AASACheck;
-use crate::ios::entitlements::Entitlements;
+use crate::ios::entitlements::{self, Entitlements};
 use http::Uri;
+use tokio::prelude::*;
 
-// TODO: make it a future
-pub struct IOSCheck {
-    url: Uri,
-    bundle_identifier: Option<String>,
-    ipa: Option<String>,
-    entitlements: Option<Entitlements>,
-    aasa_check: Option<AASACheck>,
+pub struct IPACheckResult {
+    pub bundle_identifier: Option<String>,
+    pub entitlements: Option<Entitlements>,
 }
 
-impl IOSCheck {
-    fn from_cli_args(args: &ArgMatches) -> Self {
+pub struct IPACheck {
+    pub url: Uri,
+    pub bundle_identifier: Option<String>,
+    pub ipa: Option<String>,
+}
+
+impl IPACheck {
+    pub fn from_cli_args(args: &ArgMatches) -> Self {
         let url = args.value_of("URL").unwrap();
         let url: Uri = url.parse().expect("invalid url");
 
@@ -31,12 +33,29 @@ impl IOSCheck {
             ipa = Some(fname.to_string());
         }
 
-        IOSCheck {
+        IPACheck {
             url,
             bundle_identifier,
             ipa,
-            entitlements: None,
-            aasa_check: None,
         }
+    }
+}
+
+impl Future for IPACheck {
+    type Item = IPACheckResult;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        if self.ipa.is_some() {
+            let mut res = IPACheckResult {
+                bundle_identifier: self.bundle_identifier.clone(),
+                entitlements: None,
+            };
+            if let Some(ents) = entitlements::extract_info_from_ipa(self.ipa.as_ref().unwrap()) {
+                res.entitlements = Some(ents);
+                return Ok(Async::Ready(res));
+            }
+        }
+        Err(())
     }
 }

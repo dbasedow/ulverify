@@ -1,4 +1,6 @@
 use crate::ios::aasa::AASACheck;
+use crate::ios::check::IPACheckResult;
+use crate::ios::entitlements::Entitlements;
 use std::io::{self, Write};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
@@ -98,5 +100,42 @@ pub fn report_aasa_human(aasa: &AASACheck) -> io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+pub fn report_entitlements_human(check: IPACheckResult) -> io::Result<()> {
+    let mut stdout = StandardStream::stdout(ColorChoice::Always);
+
+    let mut green = ColorSpec::new();
+    green.set_fg(Some(Color::Green));
+
+    let mut red = ColorSpec::new();
+    red.set_fg(Some(Color::Red));
+
+    if let Some(entitlements) = check.entitlements {
+        if let Some(bundle_identifier) = entitlements.application_identifier {
+            if let Some(pos) = bundle_identifier.find('.') {
+                let bundle_identifier = &bundle_identifier[pos..];
+
+                if let Some(bundle_id) = check.bundle_identifier {
+                    if bundle_id == bundle_identifier {
+                        stdout.set_color(&green)?;
+                        println!(
+                            "\u{2714} Bundle identifiers match IPA: {}, asserted: {}",
+                            bundle_identifier, bundle_id
+                        );
+                    } else {
+                        stdout.set_color(&red)?;
+                        println!(
+                            "\u{2757} Bundle identifiers match IPA: {}, asserted: {}",
+                            bundle_identifier, bundle_id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    stdout.reset()?;
     Ok(())
 }
