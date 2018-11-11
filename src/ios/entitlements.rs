@@ -52,6 +52,7 @@ fn extract_executable_from_ipa(ipa: &str) -> zip::result::ZipResult<Box<Vec<u8>>
 
     candidates.sort_by(|c1, c2| c1.1.cmp(&c2.1));
 
+    // TODO: allocate with capacity from previous loops file size
     let mut buf: Vec<u8> = Vec::new();
     {
         let mut file = zip.by_index(candidates[0].0)?;

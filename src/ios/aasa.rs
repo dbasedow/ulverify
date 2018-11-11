@@ -11,23 +11,23 @@ use std::io::Write;
 
 #[derive(Debug)]
 pub struct Match {
-    bundle_id: String,
-    pattern: String,
+    pub bundle_id: String,
+    pub pattern: String,
 }
 
 #[derive(Debug)]
 pub struct AASACheck {
     //Input
-    url: Uri,
-    paths_to_check: Vec<String>,
+    pub url: Uri,
+    pub paths_to_check: Vec<String>,
 
     //Results
-    ok_response: Option<bool>,
-    content_type: Option<String>,
-    file_size: Option<usize>,
-    parsed: Option<Box<AppleAppSiteAssociation>>,
-    parse_error: Option<bool>,
-    matches: Option<Vec<Match>>,
+    pub ok_response: Option<bool>,
+    pub content_type: Option<String>,
+    pub file_size: Option<usize>,
+    pub parsed: Option<Box<AppleAppSiteAssociation>>,
+    pub parse_error: Option<bool>,
+    pub matches: Option<Vec<Match>>,
 }
 
 impl AASACheck {
@@ -50,6 +50,11 @@ impl AASACheck {
         } else {
             false
         }
+    }
+
+    pub fn has_matches(&self) -> bool {
+
+        self.matches.is_some() && self.matches.as_ref().unwrap().len() > 0
     }
 }
 
@@ -158,13 +163,13 @@ fn test_regex_from_pattern() {
     assert_eq!("/fo./.*", regex_from_pattern("/fo?/*"));
 }
 
-pub fn aasa_match(app: &AppLinkDetail, path: &str) -> bool {
+pub fn aasa_match(app: &AppLinkDetail, path: &str) -> Option<String> {
     for pattern in &app.paths {
         if aasa_match_path(&pattern, path) {
-            return true;
+            return Some(pattern.to_string());
         }
     }
-    false
+    None
 }
 
 // takes url to AASA file and path to check for handling, returns AppIDs that would match
@@ -207,10 +212,12 @@ pub fn fetch_and_check(
                     Ok::<_, hyper::Error>(buf)
                 })
                 .wait();
-            
+
             if data.is_err() {
                 return Err(check);
             }
+
+            check.ok_response = Some(true);
 
             let data = data.unwrap();
             check.file_size = Some(data.get_ref().len());
@@ -232,10 +239,10 @@ pub fn fetch_and_check(
             if let Some(ref parsed) = check.parsed {
                 for app in &parsed.applinks.details {
                     for path_to_check in &check.paths_to_check {
-                        if aasa_match(&app, &path_to_check[..]) {
+                        if let Some(pat) = aasa_match(&app, &path_to_check[..]) {
                             let m = Match {
                                 bundle_id: app.appID.clone(),
-                                pattern: String::new(),
+                                pattern: pat,
                             };
                             res.push(m);
                         }

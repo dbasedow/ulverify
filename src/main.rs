@@ -1,4 +1,3 @@
-extern crate zip;
 extern crate clap;
 extern crate hyper;
 extern crate hyper_tls;
@@ -8,13 +7,16 @@ extern crate regex;
 extern crate regex_syntax;
 extern crate serde;
 extern crate serde_json;
+extern crate termcolor;
 extern crate tokio;
+extern crate zip;
 
 #[macro_use]
 extern crate serde_derive;
 
 use self::ios::aasa;
 use self::ios::entitlements;
+use self::ios::report;
 use clap::{App, Arg, SubCommand};
 use futures::Future;
 use http::Uri;
@@ -25,6 +27,7 @@ fn main() {
     let matches = App::new("Universal Link Validator")
         .version("0.1")
         .author("Daniel Basedow")
+        /*
         .arg(
             Arg::with_name("ios-executable")
                 .long("ios-executable")
@@ -32,6 +35,7 @@ fn main() {
                 .help("iOS executable to check against")
                 .takes_value(true),
         )
+        */
         .arg(
             Arg::with_name("bundle-identifier")
                 .long("bundle-id")
@@ -76,8 +80,8 @@ fn main() {
 
     println!("Running checks for link: {}", url);
 
-    if let Some(fname) = matches.value_of("ios-executable") {
-        if let Some(ents) = entitlements::extract_info_from_file(fname) {
+    if let Some(fname) = matches.value_of("ipa") {
+        if let Some(ents) = entitlements::extract_info_from_ipa(fname) {
             let domain = url.host().unwrap();
             if !ents.matches_applink_domain(domain) {
                 println!("The entitlements in the supplied executable do not claim {} as an 'applinks' domain.", domain);
@@ -114,7 +118,7 @@ fn main() {
     );
 
     let p = aasa::fetch_and_check(candidate_a, url.path()).and_then(|check| {
-        println!("{:?}", check);
+        report::report_aasa_human(&check);
         Ok(())
     });
 
