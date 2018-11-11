@@ -2,6 +2,7 @@ use mach_object::{LoadCommand, OFile};
 use plist::Plist;
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
+use zip::result::ZipError;
 
 #[derive(Debug)]
 pub struct Entitlements {
@@ -26,6 +27,56 @@ impl Entitlements {
 
         false
     }
+}
+
+pub fn extract_info_from_ipa(ipa: &str) -> Option<Entitlements> {
+    if let Ok(buf) = extract_executable_from_ipa(ipa) {
+        return extract_info_from_plist(&buf);
+    }
+    None
+}
+
+fn extract_executable_from_ipa(ipa: &str) -> zip::result::ZipResult<Box<Vec<u8>>> {
+    let file = File::open(ipa)?;
+
+    let mut zip = zip::ZipArchive::new(file)?;
+
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+
+    for i in 0..zip.len() {
+        let file = zip.by_index(i).unwrap();
+        if file.name().ends_with("/Info.plist") {
+            candidates.push((i, file.name().len()));
+        }
+    }
+
+    candidates.sort_by(|c1, c2| c1.1.cmp(&c2.1));
+
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut file = zip.by_index(candidates[0].0)?;
+        file.read_to_end(&mut buf)?;
+    }
+
+    let cur = Cursor::new(&buf[..]);
+
+    if let Ok(Plist::Dictionary(parsed)) = Plist::read(cur) {
+        if let Some(Plist::String(executable)) = parsed.get("CFBundleExecutable") {
+            if let Some(Plist::String(bundle_name)) = parsed.get("CFBundleName") {
+                let mut fname = vec![];
+                write!(&mut fname, "Payload/{}.app/{}", bundle_name, executable);
+                let fname = String::from_utf8(fname).unwrap();
+                if let Ok(mut file) = zip.by_name(&fname) {
+                    let mut buf = Box::new(Vec::with_capacity(file.size() as usize));
+                    if let Ok(_) = file.read_to_end(&mut buf) {
+                        return Ok(buf);
+                    }
+                }
+            }
+        }
+    }
+
+    Err(ZipError::FileNotFound)
 }
 
 pub fn extract_info_from_file(file_name: &str) -> Option<Entitlements> {

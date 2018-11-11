@@ -24,7 +24,6 @@ pub struct AASACheck {
     //Results
     ok_response: Option<bool>,
     content_type: Option<String>,
-    body: Vec<u8>,
     file_size: Option<usize>,
     parsed: Option<Box<AppleAppSiteAssociation>>,
     parse_error: Option<bool>,
@@ -38,7 +37,6 @@ impl AASACheck {
             paths_to_check,
             ok_response: None,
             content_type: None,
-            body: vec![],
             file_size: None,
             parsed: None,
             parse_error: None,
@@ -215,6 +213,7 @@ pub fn fetch_and_check(
             }
 
             let data = data.unwrap();
+            check.file_size = Some(data.get_ref().len());
 
             match serde_json::from_slice::<AppleAppSiteAssociation>(data.get_ref()) {
                 Ok(aasa) => {
@@ -228,7 +227,7 @@ pub fn fetch_and_check(
             Ok(check)
         })
         // possibly check size here and abort further checks
-        .and_then(move |mut check| {
+        .and_then(|mut check| {
             let mut res: Vec<Match> = Vec::new();
             if let Some(ref parsed) = check.parsed {
                 for app in &parsed.applinks.details {
