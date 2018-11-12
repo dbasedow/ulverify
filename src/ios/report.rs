@@ -115,7 +115,7 @@ pub fn report_entitlements_human(check: IPACheckResult) -> io::Result<()> {
     if let Some(entitlements) = check.entitlements {
         if let Some(bundle_identifier) = entitlements.application_identifier {
             if let Some(pos) = bundle_identifier.find('.') {
-                let bundle_identifier = &bundle_identifier[pos..];
+                let bundle_identifier = &bundle_identifier[pos + 1..];
 
                 if let Some(bundle_id) = check.bundle_identifier {
                     if bundle_id == bundle_identifier {
@@ -127,7 +127,7 @@ pub fn report_entitlements_human(check: IPACheckResult) -> io::Result<()> {
                     } else {
                         stdout.set_color(&red)?;
                         println!(
-                            "\u{2757} Bundle identifiers match IPA: {}, asserted: {}",
+                            "\u{2757} No bundle identifiers match IPA: {}, asserted: {}",
                             bundle_identifier, bundle_id
                         );
                     }

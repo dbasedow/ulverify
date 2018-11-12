@@ -14,15 +14,18 @@ extern crate zip;
 #[macro_use]
 extern crate serde_derive;
 
-use crate::ios::report::report_entitlements_human;
 use self::ios::aasa;
 use self::ios::check;
 use self::ios::entitlements;
 use self::ios::report;
 use clap::{App, Arg, SubCommand};
+use crate::ios::aasa::get_aasa_to_report;
+use crate::ios::report::report_aasa_human;
+use crate::ios::report::report_entitlements_human;
 use futures::Future;
 use http::Uri;
 use std::env;
+use std::fs;
 use std::process;
 
 fn main() {
@@ -73,47 +76,17 @@ fn main() {
     let url = matches.value_of("URL").unwrap();
     let url: Uri = url.parse().expect("invalid url");
 
+    if let Some(ipa) = matches.value_of("ipa") {
+        fs::metadata(ipa).expect("IPA file not found");
+    }
+
     if url.host().is_none() {
         panic!("URL must contain a host");
     }
 
     let mut bundle_identifier = matches.value_of("bundle-identifier");
-    let mut team_id: Option<String> = None;
 
     println!("Running checks for link: {}", url);
-
-    /*
-    if let Some(fname) = matches.value_of("ipa") {
-        if let Some(ents) = entitlements::extract_info_from_ipa(fname) {
-            let domain = url.host().unwrap();
-            if !ents.matches_applink_domain(domain) {
-                println!("The entitlements in the supplied executable do not claim {} as an 'applinks' domain.", domain);
-                println!("Found:");
-                for d in ents.associated_domains {
-                    println!("  {}", d);
-                }
-                println!("");
-                println!("Missing:");
-                println!("  applinks:{}", domain);
-                process::exit(1);
-            }
-    
-            if let Some(app_id) = ents.application_identifier {
-                if let Some(pos) = app_id.find('.') {
-                    team_id = Some(app_id[..pos].to_string());
-                    if let Some(bundle_id) = bundle_identifier {
-                        if &app_id[pos + 1..] != bundle_id {
-                            println!("Supplied bundle identifier does not match bundle identifier from executable: {}", &app_id[pos + 1..]);
-                            process::exit(1);
-                        }
-                    } else {
-                        bundle_identifier = Some(&app_id[pos + 1..]);
-                    }
-                }
-            }
-        }
-    }
-    */
 
     let p_ipa = check::IPACheck::from_cli_args(&matches);
 
@@ -123,11 +96,15 @@ fn main() {
     let candidate_b = aasa::root_aasa_from_url(&url);
     let p_aasa_2 = aasa::fetch_and_check(candidate_b, url.path());
 
-    let p = p_ipa.join3(p_aasa_1, p_aasa_2).and_then(|(ios_check, aasa_check_1, aasa_check_2)| {
-        report_entitlements_human(ios_check);
-        println!("{:?} {:?}", aasa_check_1, aasa_check_2);
-        Ok(())
-    });
+    let p = p_ipa
+        .join3(p_aasa_1, p_aasa_2)
+        .and_then(|(ios_check, aasa_check_1, aasa_check_2)| {
+            report_entitlements_human(ios_check);
+            let aasa_check = get_aasa_to_report(&aasa_check_1, &aasa_check_2);
+
+            report_aasa_human(&aasa_check);
+            Ok(())
+        });
 
     tokio::run(p);
 }

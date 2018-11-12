@@ -53,8 +53,31 @@ impl AASACheck {
     }
 
     pub fn has_matches(&self) -> bool {
-
         self.matches.is_some() && self.matches.as_ref().unwrap().len() > 0
+    }
+
+    fn get_score(&self) -> u64 {
+        let mut res = 0;
+        match self.ok_response {
+            Some(ok_response) if ok_response => res += 1,
+            _ => {}
+        }
+
+        match self.file_size {
+            Some(file_size) if file_size < 128_000 => res += 1,
+            _ => {}
+        }
+
+        if self.content_type_json() {
+            res += 1;
+        }
+
+        match self.parse_error {
+            Some(parse_error) if !parse_error => res += 1,
+            _ => {}
+        }
+
+        res
     }
 }
 
@@ -73,6 +96,17 @@ pub struct AppLinks {
 pub struct AppLinkDetail {
     appID: String,
     paths: Vec<String>,
+}
+
+pub fn get_aasa_to_report<'a>(aasa_1: &'a AASACheck, aasa_2: &'a AASACheck) -> &'a AASACheck {
+    let s1 = aasa_1.get_score();
+    let s2 = aasa_2.get_score();
+
+    if s2 > s1 {
+        aasa_2
+    } else {
+        aasa_1
+    }
 }
 
 pub fn aasa_match_path(pattern: &str, path: &str) -> bool {

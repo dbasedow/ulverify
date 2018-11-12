@@ -46,16 +46,15 @@ impl Future for IPACheck {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let mut res = IPACheckResult {
+            bundle_identifier: self.bundle_identifier.clone(),
+            entitlements: None,
+        };
         if self.ipa.is_some() {
-            let mut res = IPACheckResult {
-                bundle_identifier: self.bundle_identifier.clone(),
-                entitlements: None,
-            };
             if let Some(ents) = entitlements::extract_info_from_ipa(self.ipa.as_ref().unwrap()) {
                 res.entitlements = Some(ents);
-                return Ok(Async::Ready(res));
             }
         }
-        Err(())
+        Ok(Async::Ready(res))
     }
 }
