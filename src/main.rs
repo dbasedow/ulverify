@@ -99,10 +99,10 @@ fn main() {
     let p = p_ipa
         .join3(p_aasa_1, p_aasa_2)
         .and_then(|(ios_check, aasa_check_1, aasa_check_2)| {
-            report_entitlements_human(ios_check);
+            report_entitlements_human(&ios_check);
             let aasa_check = get_aasa_to_report(&aasa_check_1, &aasa_check_2);
 
-            report_aasa_human(&aasa_check);
+            report_aasa_human(&aasa_check, &ios_check);
             Ok(())
         });
 

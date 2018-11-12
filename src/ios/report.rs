@@ -4,7 +4,7 @@ use crate::ios::entitlements::Entitlements;
 use std::io::{self, Write};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
-pub fn report_aasa_human(aasa: &AASACheck) -> io::Result<()> {
+pub fn report_aasa_human(aasa: &AASACheck, ipa_check: &IPACheckResult) -> io::Result<()> {
     let mut skip = false;
 
     let mut stdout = StandardStream::stdout(ColorChoice::Always);
@@ -88,11 +88,25 @@ pub fn report_aasa_human(aasa: &AASACheck) -> io::Result<()> {
 
     if !skip {
         if aasa.has_matches() {
+            let bundle_id = if let Some(ref ents) = ipa_check.entitlements {
+                if let Some(ref application_identifier) = ents.application_identifier {
+                    application_identifier.clone()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
             stdout.set_color(&green)?;
             println!("\u{2714} Matches found:");
             stdout.reset()?;
             for mat in aasa.matches.as_ref().unwrap() {
-                println!("  {} ({})", mat.bundle_id, mat.pattern);
+                if bundle_id == mat.bundle_id {
+                    stdout.set_color(&green)?;
+                    write!(stdout, "\u{2714}");
+                }
+                writeln!(stdout, "\t{} ({})", mat.bundle_id, mat.pattern);
+                stdout.reset()?;
             }
         } else {
             stdout.set_color(&red)?;
@@ -103,7 +117,7 @@ pub fn report_aasa_human(aasa: &AASACheck) -> io::Result<()> {
     Ok(())
 }
 
-pub fn report_entitlements_human(check: IPACheckResult) -> io::Result<()> {
+pub fn report_entitlements_human(check: &IPACheckResult) -> io::Result<()> {
     let mut stdout = StandardStream::stdout(ColorChoice::Always);
 
     let mut green = ColorSpec::new();
@@ -112,12 +126,12 @@ pub fn report_entitlements_human(check: IPACheckResult) -> io::Result<()> {
     let mut red = ColorSpec::new();
     red.set_fg(Some(Color::Red));
 
-    if let Some(entitlements) = check.entitlements {
-        if let Some(bundle_identifier) = entitlements.application_identifier {
+    if let Some(ref entitlements) = check.entitlements {
+        if let Some(ref bundle_identifier) = entitlements.application_identifier {
             if let Some(pos) = bundle_identifier.find('.') {
                 let bundle_identifier = &bundle_identifier[pos + 1..];
 
-                if let Some(bundle_id) = check.bundle_identifier {
+                if let Some(ref bundle_id) = check.bundle_identifier {
                     if bundle_id == bundle_identifier {
                         stdout.set_color(&green)?;
                         println!(
