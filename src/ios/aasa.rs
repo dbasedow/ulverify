@@ -1,12 +1,9 @@
-use bytes::BufMut;
-use http::status;
 use http::uri::Parts;
 use http::Uri;
-use hyper::rt::{Future, Stream};
-use hyper::Client;
-use hyper_tls::HttpsConnector;
 use regex::Regex;
 use regex_syntax::is_meta_character;
+use std::io;
+use std::io::Read;
 use std::io::Write;
 
 #[derive(Debug)]
@@ -98,14 +95,13 @@ pub struct AppLinkDetail {
     paths: Vec<String>,
 }
 
-pub fn get_aasa_to_report<'a>(aasa_1: &'a AASACheck, aasa_2: &'a AASACheck) -> &'a AASACheck {
-    let s1 = aasa_1.get_score();
-    let s2 = aasa_2.get_score();
-
-    if s2 > s1 {
-        aasa_2
-    } else {
-        aasa_1
+impl AppLinkDetail {
+    fn matches(&self, app_id: &str) -> bool {
+        if let Some(team_id_end) = self.appID.find('.') {
+            let app_id_no_team = &self.appID[team_id_end + 1..];
+            return app_id_no_team == app_id;
+        }
+        false
     }
 }
 
@@ -206,87 +202,162 @@ pub fn aasa_match(app: &AppLinkDetail, path: &str) -> Option<String> {
     None
 }
 
-// takes url to AASA file and path to check for handling, returns AppIDs that would match
-pub fn fetch_and_check(
+#[derive(Debug)]
+pub enum Error {
+    FetchFailed,
+    ParseFailed(serde_json::Error),
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        Error::FetchFailed
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Error::FetchFailed
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::ParseFailed(e)
+    }
+}
+
+#[derive(Debug)]
+pub enum Problem {
+    WrongStatusCode(u16),
+    NoContentTypeHeader,
+    WrongContentTypeHeader(String),
+    ContentTooLarge(usize),
+    InvalidFileFormat,
+    NoMatch,
+}
+
+impl Problem {
+    pub fn to_string_human(&self) -> String {
+        match self {
+            Problem::WrongStatusCode(sc) if *sc == 301 || *sc == 302 => {
+                format!("Invalid status code '{}'. Redirects are not allowed.", sc)
+            }
+            Problem::WrongStatusCode(sc) => format!("Invalid status code '{}'.", sc),
+            Problem::NoContentTypeHeader => {
+                format!("No 'Content-Type' HTTP header sent. Must be 'application/json'.")
+            }
+            Problem::WrongContentTypeHeader(ct) => format!(
+                "Wrong 'Content-Type' header sent: '{}'. Must be 'application/json'",
+                ct
+            ),
+            Problem::ContentTooLarge(s) => format!(
+                "File too large {} bytes (uncompressed). Maximum allowed is 128KB",
+                s
+            ),
+            Problem::InvalidFileFormat => format!("Failed to parse file."),
+            Problem::NoMatch => format!("No bundle id, path combination matches your request."),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CheckResult {
+    uri: Uri,
+    path_to_check: String,
+    app_id: String,
+    status_code: Option<u16>,
+    content_type: Option<String>,
+    content: Option<Vec<u8>>,
+    content_parsed: Option<AppleAppSiteAssociation>,
+    matches: Option<Vec<Match>>,
+}
+
+impl CheckResult {
+    fn new(uri: Uri, path_to_check: String, app_id: String) -> Self {
+        CheckResult {
+            uri,
+            path_to_check,
+            app_id,
+            status_code: None,
+            content_type: None,
+            content: None,
+            content_parsed: None,
+            matches: None,
+        }
+    }
+
+    pub fn get_problems(&self) -> Vec<Problem> {
+        let mut problems = Vec::new();
+        if let Some(sc) = self.status_code {
+            if sc != 200 {
+                problems.push(Problem::WrongStatusCode(sc));
+            }
+        }
+
+        if let Some(ref ct) = self.content_type {
+            if ct != "application/json" {
+                problems.push(Problem::WrongContentTypeHeader(ct.to_string()));
+            }
+        } else {
+            problems.push(Problem::NoContentTypeHeader);
+        }
+
+        if let Some(ref content) = self.content {
+            if content.len() > 128_000 {
+                problems.push(Problem::ContentTooLarge(content.len()));
+            }
+        }
+
+        if self.content.is_some() && self.content_parsed.is_none() {
+            problems.push(Problem::InvalidFileFormat);
+        }
+
+        if let Some(ref matches) = self.matches {
+            if matches.len() == 0 {
+                problems.push(Problem::NoMatch);
+            }
+        }
+
+        problems
+    }
+}
+
+pub fn fetch_and_check_sync(
     aasa_uri: Uri,
     path_to_check: &str,
-) -> impl Future<Item = AASACheck, Error = ()> {
-    let https = HttpsConnector::new(4).unwrap();
-    let client = Client::builder().build::<_, hyper::Body>(https);
-    let path_to_check = path_to_check.to_string();
-    let mut check = AASACheck::new(aasa_uri.clone(), vec![path_to_check.clone()]);
+    app_id: &str,
+) -> Result<CheckResult, Error> {
+    let mut res = reqwest::get(&aasa_uri.to_string()[..])?;
+    let mut check_res = CheckResult::new(aasa_uri, path_to_check.to_string(), app_id.to_string());
 
-    client
-        .get(aasa_uri)
-        .then(move |res| {
-            if let Err(err) = res {
-                check.ok_response = Some(false);
-                return Err(check);
-            }
+    check_res.status_code = Some(res.status().as_u16());
+    if let Some(ct) = res.headers().get("Content-Type") {
+        check_res.content_type = Some(ct.to_str().unwrap().to_string());
+    }
 
-            let res = res.unwrap();
+    if res.status().as_u16() != 200 {
+        return Ok(check_res);
+    }
 
-            if res.status() != status::StatusCode::OK {
-                check.ok_response = Some(false);
-                return Err(check);
-            }
+    let mut buf = Vec::with_capacity(500);
+    res.read_to_end(&mut buf)?;
+    check_res.content = Some(buf);
 
-            if let Some(header) = res.headers().get("Content-Type") {
-                if let Ok(s) = header.to_str() {
-                    check.content_type = Some(s.to_string());
-                }
-            }
+    let parsed =
+        serde_json::from_slice::<AppleAppSiteAssociation>(check_res.content.as_ref().unwrap())?;
 
-            let buf = Vec::new();
+    let mut res: Vec<Match> = Vec::new();
+    for app in parsed.applinks.details.iter().filter(|a| a.matches(app_id)) {
+        if let Some(pat) = aasa_match(&app, &path_to_check[..]) {
+            let m = Match {
+                bundle_id: app.appID.clone(),
+                pattern: pat,
+            };
+            res.push(m);
+        }
+    }
+    check_res.matches = Some(res);
+    check_res.content_parsed = Some(parsed);
 
-            let data = res
-                .into_body()
-                .fold(buf.writer(), |mut buf, chunk| {
-                    buf.write_all(&chunk).expect("failed writing");
-                    Ok::<_, hyper::Error>(buf)
-                })
-                .wait();
-
-            if data.is_err() {
-                return Err(check);
-            }
-
-            check.ok_response = Some(true);
-
-            let data = data.unwrap();
-            check.file_size = Some(data.get_ref().len());
-
-            match serde_json::from_slice::<AppleAppSiteAssociation>(data.get_ref()) {
-                Ok(aasa) => {
-                    check.parsed = Some(Box::new(aasa));
-                }
-                Err(_) => {
-                    check.parse_error = Some(true);
-                }
-            }
-
-            Ok(check)
-        })
-        // possibly check size here and abort further checks
-        .and_then(|mut check| {
-            let mut res: Vec<Match> = Vec::new();
-            if let Some(ref parsed) = check.parsed {
-                for app in &parsed.applinks.details {
-                    for path_to_check in &check.paths_to_check {
-                        if let Some(pat) = aasa_match(&app, &path_to_check[..]) {
-                            let m = Match {
-                                bundle_id: app.appID.clone(),
-                                pattern: pat,
-                            };
-                            res.push(m);
-                        }
-                    }
-                }
-            }
-            check.matches = Some(res);
-            Ok(check)
-        })
-        .map_err(|err| {
-            println!("{:?}", err);
-        })
+    Ok(check_res)
 }

@@ -1,155 +1,21 @@
-use crate::ios::aasa::AASACheck;
-use crate::ios::check::IPACheckResult;
-use crate::ios::entitlements::Entitlements;
-use std::io::{self, Write};
-use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+use crate::ios::aasa;
+use crate::ios::entitlements::{self, Entitlements};
 
-pub fn report_aasa_human(aasa: &AASACheck, ipa_check: &IPACheckResult) -> io::Result<()> {
-    let mut skip = false;
-
-    let mut stdout = StandardStream::stdout(ColorChoice::Always);
-
-    let mut green = ColorSpec::new();
-    green.set_fg(Some(Color::Green));
-
-    let mut red = ColorSpec::new();
-    red.set_fg(Some(Color::Red));
-
-    match aasa.ok_response {
-        Some(ok) if ok => {
-            stdout.set_color(&green)?;
-            writeln!(&mut stdout, "\u{2714} Fetching {} succeeded", aasa.url)?;
-        }
-        _ => {
-            stdout.set_color(&red)?;
-            writeln!(&mut stdout, "\u{2757} Fetching {} failed", aasa.url)?;
-            skip = true;
+pub fn report_problems_human(
+    aasa_problems: Option<Vec<aasa::Problem>>,
+    aasa: Option<aasa::CheckResult>,
+    entitlement_problems: Option<Vec<entitlements::Problem>>,
+    entitlements: Option<Entitlements>,
+) {
+    // TODO: report positive results as well?
+    if let Some(aasa_problems) = aasa_problems {
+        for problem in aasa_problems {
+            println!("{}", problem.to_string_human());
         }
     }
-    stdout.reset()?;
-
-    if !skip {
-        match aasa.content_type {
-            Some(ref ct) if ct == "application/json" => {
-                stdout.set_color(&green)?;
-                writeln!(
-                    &mut stdout,
-                    "\u{2714} Content-Type header is 'application/json'"
-                )?;
-            }
-            Some(ref ct) => {
-                stdout.set_color(&red)?;
-                writeln!(
-                    &mut stdout,
-                    "\u{2757} Content-Type header is '{}', but MUST be 'application/json'",
-                    ct
-                )?;
-            }
-            None => {
-                stdout.set_color(&red)?;
-                writeln!(
-                    &mut stdout,
-                    "\u{2757} Content-Type header is not set, but MUST be 'application/json'"
-                )?;
-            }
-        }
-        stdout.reset()?;
-    }
-
-    if !skip {
-        match aasa.file_size {
-            Some(s) if s < 128_000 => {
-                stdout.set_color(&green)?;
-                println!("\u{2714} Filesize is under 128 KB ({})", s);
-            }
-            Some(s) => {
-                stdout.set_color(&red)?;
-                println!("\u{2757} Filesize is {} but MUST be under 128 KB", s);
-            }
-            _ => {}
-        }
-        stdout.reset()?;
-    }
-
-    if !skip {
-        match aasa.parse_error {
-            Some(e) if e => {
-                stdout.set_color(&red)?;
-                println!("\u{2757} Parsing the file failed");
-                skip = true;
-            }
-            _ => {
-                stdout.set_color(&green)?;
-                println!("\u{2714} Parsing the file was successful");
-            }
-        }
-        stdout.reset()?;
-    }
-
-    if !skip {
-        if aasa.has_matches() {
-            let bundle_id = if let Some(ref ents) = ipa_check.entitlements {
-                if let Some(ref application_identifier) = ents.application_identifier {
-                    application_identifier.clone()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-            stdout.set_color(&green)?;
-            println!("\u{2714} Matches found:");
-            stdout.reset()?;
-            for mat in aasa.matches.as_ref().unwrap() {
-                if bundle_id == mat.bundle_id {
-                    stdout.set_color(&green)?;
-                    write!(stdout, "\u{2714}");
-                }
-                writeln!(stdout, "\t{} ({})", mat.bundle_id, mat.pattern);
-                stdout.reset()?;
-            }
-        } else {
-            stdout.set_color(&red)?;
-            println!("\u{2757} No matches found");
+    if let Some(entitlement_problems) = entitlement_problems {
+        for problem in entitlement_problems {
+            println!("{}", problem.to_string_human());
         }
     }
-
-    Ok(())
-}
-
-pub fn report_entitlements_human(check: &IPACheckResult) -> io::Result<()> {
-    let mut stdout = StandardStream::stdout(ColorChoice::Always);
-
-    let mut green = ColorSpec::new();
-    green.set_fg(Some(Color::Green));
-
-    let mut red = ColorSpec::new();
-    red.set_fg(Some(Color::Red));
-
-    if let Some(ref entitlements) = check.entitlements {
-        if let Some(ref bundle_identifier) = entitlements.application_identifier {
-            if let Some(pos) = bundle_identifier.find('.') {
-                let bundle_identifier = &bundle_identifier[pos + 1..];
-
-                if let Some(ref bundle_id) = check.bundle_identifier {
-                    if bundle_id == bundle_identifier {
-                        stdout.set_color(&green)?;
-                        println!(
-                            "\u{2714} Bundle identifiers match IPA: {}, asserted: {}",
-                            bundle_identifier, bundle_id
-                        );
-                    } else {
-                        stdout.set_color(&red)?;
-                        println!(
-                            "\u{2757} No bundle identifiers match IPA: {}, asserted: {}",
-                            bundle_identifier, bundle_id
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    stdout.reset()?;
-    Ok(())
 }

@@ -27,6 +27,37 @@ impl Entitlements {
 
         false
     }
+
+    pub fn get_problems(&self, app_id: &str, domain: &str) -> Vec<Problem> {
+        let mut problems = Vec::new();
+        if let Some(ref application_identifier) = self.application_identifier {
+            if application_identifier != app_id {
+                problems.push(Problem::WrongBundleIdentifier);
+            }
+        }
+        if !self.matches_applink_domain(domain) {
+            problems.push(Problem::DomainNotInApplinks);
+        }
+        problems
+    }
+}
+
+pub enum Problem {
+    DomainNotInApplinks,
+    WrongBundleIdentifier,
+}
+
+impl Problem {
+    pub fn to_string_human(&self) -> String {
+        match self {
+            Problem::DomainNotInApplinks => {
+                format!("The domain is not listed in the entitlements.")
+            }
+            Problem::WrongBundleIdentifier => format!(
+                "The bundle identifier in the entitlements does not match the one you supplied."
+            ),
+        }
+    }
 }
 
 pub fn extract_info_from_ipa(ipa: &str) -> Option<Entitlements> {

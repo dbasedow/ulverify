@@ -1,30 +1,21 @@
 extern crate clap;
-extern crate hyper;
-extern crate hyper_tls;
 extern crate mach_object;
 extern crate plist;
 extern crate regex;
 extern crate regex_syntax;
 extern crate serde;
 extern crate serde_json;
-extern crate termcolor;
-extern crate tokio;
 extern crate zip;
 
 #[macro_use]
 extern crate serde_derive;
 
 use self::ios::aasa;
-use self::ios::check;
-use self::ios::entitlements;
 use self::ios::report;
-use clap::{App, Arg, SubCommand};
-use crate::ios::aasa::get_aasa_to_report;
-use crate::ios::report::report_aasa_human;
-use crate::ios::report::report_entitlements_human;
-use futures::Future;
+use crate::ios::aasa::fetch_and_check_sync;
+use crate::ios::entitlements::extract_info_from_ipa;
+use clap::{App, Arg, ArgMatches, SubCommand};
 use http::Uri;
-use std::env;
 use std::fs;
 use std::process;
 
@@ -32,81 +23,116 @@ fn main() {
     let matches = App::new("Universal Link Validator")
         .version("0.1")
         .author("Daniel Basedow")
-        /*
-        .arg(
-            Arg::with_name("ios-executable")
-                .long("ios-executable")
-                .value_name("FILE")
-                .help("iOS executable to check against")
-                .takes_value(true),
+        .subcommand(
+            SubCommand::with_name("ios")
+                .about("iOS related checks")
+                .arg(
+                    Arg::with_name("ipa")
+                        .long("ipa")
+                        .value_name("FILE")
+                        .help("IPA to check against")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("bundle-identifier")
+                        .value_name("BUNDLE_ID")
+                        .help("Bundle Identifier of app")
+                        .required(true)
+                        .index(1),
+                )
+                .arg(
+                    Arg::with_name("URL")
+                        .value_name("URL")
+                        .help("URL to check against")
+                        .required(true)
+                        .index(2),
+                ),
         )
-        */
-        .arg(
-            Arg::with_name("bundle-identifier")
-                .long("bundle-id")
-                .value_name("ID")
-                .help("Bundle identifier to match against")
-                .takes_value(true),
-        )
-        /*
-        .arg(
-            Arg::with_name("apk")
-                .long("apk")
-                .value_name("FILE")
-                .help("APK to check against")
-                .takes_value(true),
-        )
-        */
-        .arg(
-            Arg::with_name("ipa")
-                .long("ipa")
-                .value_name("FILE")
-                .help("IPA to check against")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("URL")
-                .value_name("URL")
-                .help("URL to check against")
-                .required(true)
-                .index(1),
+        .subcommand(
+            SubCommand::with_name("android")
+                .about("Android related checks")
+                .arg(
+                    Arg::with_name("apk")
+                        .long("apk")
+                        .value_name("FILE")
+                        .help("APK to check against")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("app-id")
+                        .value_name("APP_ID")
+                        .help("App Identifier")
+                        .required(true)
+                        .index(1),
+                )
+                .arg(
+                    Arg::with_name("URL")
+                        .value_name("URL")
+                        .help("URL to check against")
+                        .required(true)
+                        .index(2),
+                ),
         )
         .get_matches();
 
+    match matches.subcommand() {
+        ("ios", Some(m)) => cmd_ios(m),
+        ("android", Some(m)) => cmd_android(m),
+        _ => unimplemented!(),
+    }
+}
+
+fn cmd_ios(matches: &ArgMatches) {
     let url = matches.value_of("URL").unwrap();
     let url: Uri = url.parse().expect("invalid url");
-
-    if let Some(ipa) = matches.value_of("ipa") {
-        fs::metadata(ipa).expect("IPA file not found");
-    }
 
     if url.host().is_none() {
         panic!("URL must contain a host");
     }
 
-    let mut bundle_identifier = matches.value_of("bundle-identifier");
+    if let Some(ipa) = matches.value_of("ipa") {
+        fs::metadata(ipa).expect("IPA file not found");
+    }
+    let bundle_identifier = matches.value_of("bundle-identifier").unwrap();
 
     println!("Running checks for link: {}", url);
 
-    let p_ipa = check::IPACheck::from_cli_args(&matches);
+    let aasa_uri = aasa::well_known_aasa_from_url(&url);
+    let mut aasa = fetch_and_check_sync(aasa_uri, url.path(), bundle_identifier);
+    if aasa.is_err() {
+        let aasa_uri = aasa::root_aasa_from_url(&url);
+        aasa = fetch_and_check_sync(aasa_uri, url.path(), bundle_identifier);
+    }
 
-    let candidate_a = aasa::well_known_aasa_from_url(&url);
-    let p_aasa_1 = aasa::fetch_and_check(candidate_a, url.path());
+    if aasa.is_err() {
+        eprintln!("unable to fetch app association file");
+        process::exit(-1);
+    }
 
-    let candidate_b = aasa::root_aasa_from_url(&url);
-    let p_aasa_2 = aasa::fetch_and_check(candidate_b, url.path());
+    let mut ipa_res = None;
+    let mut entitlements = None;
+    if let Some(ipa) = matches.value_of("ipa") {
+        if let Some(entitlements_) = extract_info_from_ipa(ipa) {
+            let problems = entitlements_.get_problems(bundle_identifier, url.host().unwrap());
+            if problems.len() > 0 {
+                ipa_res = Some(problems)
+            }
+            entitlements = Some(entitlements_);
+        }
+    }
 
-    let p = p_ipa
-        .join3(p_aasa_1, p_aasa_2)
-        .and_then(|(ios_check, aasa_check_1, aasa_check_2)| {
-            report_entitlements_human(&ios_check);
-            let aasa_check = get_aasa_to_report(&aasa_check_1, &aasa_check_2);
+    let aasa = aasa.ok().unwrap();
+    let problems = aasa.get_problems();
+    report::report_problems_human(Some(problems), Some(aasa), ipa_res, entitlements);
+}
 
-            report_aasa_human(&aasa_check, &ios_check);
-            Ok(())
-        });
+fn cmd_android(matches: &ArgMatches) {
+    let url = matches.value_of("URL").unwrap();
+    let url: Uri = url.parse().expect("invalid url");
 
-    tokio::run(p);
+    if url.host().is_none() {
+        panic!("URL must contain a host");
+    }
 }
 
 mod ios;
