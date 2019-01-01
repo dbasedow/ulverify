@@ -114,7 +114,7 @@ fn cmd_ios(matches: &ArgMatches) {
     if let Some(ipa) = matches.value_of("ipa") {
         if let Some(entitlements_) = extract_info_from_ipa(ipa) {
             let problems = entitlements_.get_problems(bundle_identifier, url.host().unwrap());
-            if problems.len() > 0 {
+            if !problems.is_empty() {
                 ipa_res = Some(problems)
             }
             entitlements = Some(entitlements_);

@@ -4,78 +4,11 @@ use regex::Regex;
 use regex_syntax::is_meta_character;
 use std::io;
 use std::io::Read;
-use std::io::Write;
 
 #[derive(Debug)]
 pub struct Match {
     pub bundle_id: String,
     pub pattern: String,
-}
-
-#[derive(Debug)]
-pub struct AASACheck {
-    //Input
-    pub url: Uri,
-    pub paths_to_check: Vec<String>,
-
-    //Results
-    pub ok_response: Option<bool>,
-    pub content_type: Option<String>,
-    pub file_size: Option<usize>,
-    pub parsed: Option<Box<AppleAppSiteAssociation>>,
-    pub parse_error: Option<bool>,
-    pub matches: Option<Vec<Match>>,
-}
-
-impl AASACheck {
-    fn new(url: Uri, paths_to_check: Vec<String>) -> Self {
-        Self {
-            url,
-            paths_to_check,
-            ok_response: None,
-            content_type: None,
-            file_size: None,
-            parsed: None,
-            parse_error: None,
-            matches: None,
-        }
-    }
-
-    fn content_type_json(&self) -> bool {
-        if let Some(ref content_type) = self.content_type {
-            content_type == "application/json"
-        } else {
-            false
-        }
-    }
-
-    pub fn has_matches(&self) -> bool {
-        self.matches.is_some() && self.matches.as_ref().unwrap().len() > 0
-    }
-
-    fn get_score(&self) -> u64 {
-        let mut res = 0;
-        match self.ok_response {
-            Some(ok_response) if ok_response => res += 1,
-            _ => {}
-        }
-
-        match self.file_size {
-            Some(file_size) if file_size < 128_000 => res += 1,
-            _ => {}
-        }
-
-        if self.content_type_json() {
-            res += 1;
-        }
-
-        match self.parse_error {
-            Some(parse_error) if !parse_error => res += 1,
-            _ => {}
-        }
-
-        res
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -209,13 +142,13 @@ pub enum Error {
 }
 
 impl From<reqwest::Error> for Error {
-    fn from(e: reqwest::Error) -> Self {
+    fn from(_: reqwest::Error) -> Self {
         Error::FetchFailed
     }
 }
 
 impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Self {
+    fn from(_: io::Error) -> Self {
         Error::FetchFailed
     }
 }
@@ -244,7 +177,7 @@ impl Problem {
             }
             Problem::WrongStatusCode(sc) => format!("Invalid status code '{}'.", sc),
             Problem::NoContentTypeHeader => {
-                format!("No 'Content-Type' HTTP header sent. Must be 'application/json'.")
+                "No 'Content-Type' HTTP header sent. Must be 'application/json'.".to_string()
             }
             Problem::WrongContentTypeHeader(ct) => format!(
                 "Wrong 'Content-Type' header sent: '{}'. Must be 'application/json'",
@@ -254,8 +187,8 @@ impl Problem {
                 "File too large {} bytes (uncompressed). Maximum allowed is 128KB",
                 s
             ),
-            Problem::InvalidFileFormat => format!("Failed to parse file."),
-            Problem::NoMatch => format!("No bundle id, path combination matches your request."),
+            Problem::InvalidFileFormat => "Failed to parse file.".to_string(),
+            Problem::NoMatch => "No bundle id, path combination matches your request.".to_string(),
         }
     }
 }
@@ -313,7 +246,7 @@ impl CheckResult {
         }
 
         if let Some(ref matches) = self.matches {
-            if matches.len() == 0 {
+            if matches.is_empty() {
                 problems.push(Problem::NoMatch);
             }
         }

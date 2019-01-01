@@ -51,11 +51,12 @@ impl Problem {
     pub fn to_string_human(&self) -> String {
         match self {
             Problem::DomainNotInApplinks => {
-                format!("The domain is not listed in the entitlements.")
+                "The domain is not listed in the entitlements.".to_string()
             }
-            Problem::WrongBundleIdentifier => format!(
+            Problem::WrongBundleIdentifier => {
                 "The bundle identifier in the entitlements does not match the one you supplied."
-            ),
+                    .to_string()
+            }
         }
     }
 }
@@ -67,7 +68,7 @@ pub fn extract_info_from_ipa(ipa: &str) -> Option<Entitlements> {
     None
 }
 
-fn extract_executable_from_ipa(ipa: &str) -> zip::result::ZipResult<Box<Vec<u8>>> {
+fn extract_executable_from_ipa(ipa: &str) -> zip::result::ZipResult<Vec<u8>> {
     let file = File::open(ipa)?;
 
     let mut zip = zip::ZipArchive::new(file)?;
@@ -96,11 +97,11 @@ fn extract_executable_from_ipa(ipa: &str) -> zip::result::ZipResult<Box<Vec<u8>>
         if let Some(Plist::String(executable)) = parsed.get("CFBundleExecutable") {
             if let Some(Plist::String(bundle_name)) = parsed.get("CFBundleName") {
                 let mut fname = vec![];
-                write!(&mut fname, "Payload/{}.app/{}", bundle_name, executable);
+                write!(&mut fname, "Payload/{}.app/{}", bundle_name, executable)?;
                 let fname = String::from_utf8(fname).unwrap();
                 if let Ok(mut file) = zip.by_name(&fname) {
-                    let mut buf = Box::new(Vec::with_capacity(file.size() as usize));
-                    if let Ok(_) = file.read_to_end(&mut buf) {
+                    let mut buf = Vec::with_capacity(file.size() as usize);
+                    if file.read_to_end(&mut buf).is_ok() {
                         return Ok(buf);
                     }
                 }
@@ -144,12 +145,12 @@ pub fn extract_info_from_plist(buf: &[u8]) -> Option<Entitlements> {
     None
 }
 
-fn extract_entitlements_plist<'a>(buf: &'a [u8]) -> Option<&'a [u8]> {
+fn extract_entitlements_plist(buf: &[u8]) -> Option<&[u8]> {
     let mut cur = Cursor::new(&buf[..]);
 
     let mach_file = match OFile::parse(&mut cur).unwrap() {
         OFile::FatFile { files, .. } => {
-            if files.len() == 0 {
+            if files.is_empty() {
                 panic!("FatFile with 0 architectures");
             }
             // return first MachFile from FatFile
@@ -161,19 +162,16 @@ fn extract_entitlements_plist<'a>(buf: &'a [u8]) -> Option<&'a [u8]> {
 
     if let OFile::MachFile { ref commands, .. } = mach_file {
         for cmd in commands {
-            match cmd.command() {
-                LoadCommand::CodeSignature(ldcmd) => {
-                    let start = ldcmd.off as usize;
-                    let end = ldcmd.off as usize + ldcmd.size as usize;
-                    let data = &buf[start..end];
-                    if let Some((offset, length)) = find_codesign_plist(data) {
-                        let start = offset;
-                        // the length contains the 4 magic bytes and the 4 length bytes
-                        let end = offset + length - 8;
-                        return Some(&data[start..end]);
-                    }
+            if let LoadCommand::CodeSignature(ldcmd) = cmd.command() {
+                let start = ldcmd.off as usize;
+                let end = ldcmd.off as usize + ldcmd.size as usize;
+                let data = &buf[start..end];
+                if let Some((offset, length)) = find_codesign_plist(data) {
+                    let start = offset;
+                    // the length contains the 4 magic bytes and the 4 length bytes
+                    let end = offset + length - 8;
+                    return Some(&data[start..end]);
                 }
-                _ => {}
             }
         }
     }
