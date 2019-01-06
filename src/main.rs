@@ -77,77 +77,10 @@ fn main() {
         .get_matches();
 
     match matches.subcommand() {
-        ("ios", Some(m)) => cmd_ios(m),
-        ("android", Some(m)) => cmd_android(m),
+        ("ios", Some(m)) => ios::run(m),
+        ("android", Some(m)) => android::run(m),
         _ => unimplemented!(),
     }
-}
-
-fn cmd_ios(matches: &ArgMatches) {
-    let url = matches.value_of("URL").unwrap();
-    let url: Uri = url.parse().expect("invalid url");
-
-    if url.host().is_none() {
-        panic!("URL must contain a host");
-    }
-
-    if let Some(ipa) = matches.value_of("ipa") {
-        fs::metadata(ipa).expect("IPA file not found");
-    }
-    let bundle_identifier = matches.value_of("bundle-identifier").unwrap();
-
-    println!("Running checks for link: {}", url);
-
-    let aasa_uri = aasa::well_known_aasa_from_url(&url);
-    let mut aasa = fetch_and_check_sync(aasa_uri, url.path(), bundle_identifier);
-    if aasa.is_err() {
-        let aasa_uri = aasa::root_aasa_from_url(&url);
-        aasa = fetch_and_check_sync(aasa_uri, url.path(), bundle_identifier);
-    }
-
-    if aasa.is_err() {
-        eprintln!("unable to fetch app association file");
-        process::exit(-1);
-    }
-
-    let mut ipa_res = None;
-    let mut entitlements = None;
-    if let Some(ipa) = matches.value_of("ipa") {
-        if let Some(entitlements_) = extract_info_from_ipa(ipa) {
-            let problems = entitlements_.get_problems(bundle_identifier, url.host().unwrap());
-            if !problems.is_empty() {
-                ipa_res = Some(problems)
-            }
-            entitlements = Some(entitlements_);
-        }
-    }
-
-    let aasa = aasa.ok().unwrap();
-    let problems = aasa.get_problems();
-    report::report_problems_human(Some(problems), Some(aasa), ipa_res, entitlements);
-}
-
-fn cmd_android(matches: &ArgMatches) {
-    let url = matches.value_of("URL").unwrap();
-    let url: Uri = url.parse().expect("invalid url");
-
-    if url.host().is_none() {
-        panic!("URL must contain a host");
-    }
-
-    let app_id = matches.value_of("app-id").unwrap();
-
-    let assetlinks_uri = assetlinks::assetlinks_json_from_url(&url);
-    let mut assetlinks_res = assetlinks::fetch_and_check(assetlinks_uri, app_id.into());
-
-    if assetlinks_res.is_err() {
-        eprintln!("unable to fetch assetlinks file");
-        process::exit(-1);
-    }
-
-    let assetlinks = assetlinks_res.unwrap();
-
-    println!("{:#?}", assetlinks.get_problems());
 }
 
 mod ios;
