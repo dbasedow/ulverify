@@ -14,6 +14,7 @@ use self::ios::aasa;
 use self::ios::report;
 use crate::ios::aasa::fetch_and_check_sync;
 use crate::ios::entitlements::extract_info_from_ipa;
+use crate::android::assetlinks;
 use clap::{App, Arg, ArgMatches, SubCommand};
 use http::Uri;
 use std::fs;
@@ -133,6 +134,21 @@ fn cmd_android(matches: &ArgMatches) {
     if url.host().is_none() {
         panic!("URL must contain a host");
     }
+
+    let app_id = matches.value_of("app-id").unwrap();
+
+    let assetlinks_uri = assetlinks::assetlinks_json_from_url(&url);
+    let mut assetlinks_res = assetlinks::fetch_and_check(assetlinks_uri, app_id.into());
+
+    if assetlinks_res.is_err() {
+        eprintln!("unable to fetch assetlinks file");
+        process::exit(-1);
+    }
+
+    let assetlinks = assetlinks_res.unwrap();
+
+    println!("{:#?}", assetlinks.get_problems());
 }
 
 mod ios;
+mod android;
