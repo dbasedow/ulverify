@@ -11,18 +11,18 @@ pub struct Match {
     pub pattern: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct AppleAppSiteAssociation {
     applinks: AppLinks,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct AppLinks {
     apps: Vec<String>,
     details: Vec<AppLinkDetail>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct AppLinkDetail {
     appID: String,
     paths: Vec<String>,
