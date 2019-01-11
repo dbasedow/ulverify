@@ -1,6 +1,8 @@
 use clap::ArgMatches;
 use http::Uri;
 use std::process;
+mod apk;
+use apk_rs::apk::Apk;
 
 pub mod assetlinks;
 
@@ -20,6 +22,10 @@ pub fn run(matches: &ArgMatches) {
     if assetlinks_res.is_err() {
         eprintln!("unable to fetch assetlinks file");
         process::exit(-1);
+    }
+
+    if let Some(apk_file) = matches.value_of("apk") {
+        apk::check_apk(apk_file);
     }
 
     let assetlinks = assetlinks_res.unwrap();
