@@ -1,33 +1,25 @@
 use apk_rs::apk::Apk;
 use std::io;
 use apk_rs::axml::XmlElementStream;
+use http::Uri;
 use apk_rs::axml::XmlEvent;
+use regex::Regex;
 use apk_rs::resources::resources::is_package_reference;
 use apk_rs::typedvalue::TypedValue;
 use apk_rs::axml::ElementStart;
 use apk_rs::resources::resources::Resources;
 
-#[derive(Debug, Clone)]
-pub struct IntentFilterData {
-    scheme: Option<String>,
-    host: Option<String>,
-    port: Option<String>,
-    path: Option<String>,
-    path_pattern: Option<String>,
-    path_prefix: Option<String>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct Authority {
+    host: String,
+    port: Option<i32>,
 }
 
-impl IntentFilterData {
-    fn new() -> Self {
-        Self {
-            scheme: None,
-            host: None,
-            port: None,
-            path: None,
-            path_pattern: None,
-            path_prefix: None,
-        }
-    }
+#[derive(Debug, Clone)]
+enum PathMatcher {
+    Literal(String),
+    Prefix(String),
+    Pattern(Regex),
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +28,9 @@ pub struct IntentFilter {
     action: Vec<String>,
     category: Vec<String>,
     auto_verify: bool,
-    data: Vec<IntentFilterData>,
+    schemes: Vec<String>,
+    authorities: Vec<Authority>,
+    path_matchers: Vec<PathMatcher>
 }
 
 impl IntentFilter {
@@ -46,12 +40,57 @@ impl IntentFilter {
             action: Vec::new(),
             category: Vec::new(),
             auto_verify,
-            data: Vec::new(),
+            schemes: Vec::new(),
+            authorities: Vec::new(),
+            path_matchers: Vec::new(),
         }
     }
 
     fn is_relevant(&self) -> bool {
-        self.action.contains(&"android.intent.action.VIEW".to_string()) && self.category.contains(&"android.intent.category.BROWSABLE".to_string())
+        (self.schemes.contains(&"http".to_string()) || self.schemes.contains(&"https".to_string()))
+        && self.action.contains(&"android.intent.action.VIEW".to_string()) 
+        && self.category.contains(&"android.intent.category.BROWSABLE".to_string())
+    }
+
+    fn matches_url(&self, url: Uri) -> bool {
+        // self.schemes.contains(url.scheme())
+        // self.authorities.contains(url.host() + url.port())
+        // for m in self.path_matchers { m.match(url.path) }
+        true
+    }
+}
+
+#[derive(Debug)]
+pub struct Manifest {
+    intent_filters: Vec<IntentFilter>,
+}
+
+impl Manifest {
+    fn new() -> Self {
+        Self {
+            intent_filters: Vec::new(),
+        }
+    }
+
+    pub fn has_auto_verify(&self) -> bool {
+        self.intent_filters
+            .iter()
+            .filter(|&f| f.auto_verify)
+            .next()
+            .is_some()
+    }
+
+    pub fn unique_authorities(&self) -> Vec<Authority> {
+        let mut res = Vec::new();
+        for filter in &self.intent_filters {
+            for auth in &filter.authorities {
+                if !res.contains(auth) {
+                    res.push(auth.clone());
+                }
+            }
+        }
+
+        res
     }
 }
 
@@ -59,6 +98,8 @@ impl IntentFilter {
 enum Problem {
     InvalidApk,
     MissingAutoVerifyInManifest,
+    NoMatchingIntenFilter,
+    MultipleMatchingIntentFilters
 
 }
 
@@ -69,12 +110,12 @@ pub struct CheckResult {
     intent_filter: Vec<IntentFilter>,
 }
 
-pub fn check_apk(file_name: &str) -> io::Result<Vec<IntentFilter>> {
+pub fn check_apk(file_name: &str) -> io::Result<Manifest> {
     let apk_file = Apk::open(file_name)?;
     parse_manifest(&apk_file)
 }
 
-pub fn parse_manifest(apk: &Apk) -> io::Result<Vec<IntentFilter>> {
+pub fn parse_manifest(apk: &Apk) -> io::Result<Manifest> {
     let f = apk.file_by_name("AndroidManifest.xml")?;
     if f.is_none() {
         return Err(io::Error::new(io::ErrorKind::NotFound, "AndroidManifest.xml not found"));
@@ -104,24 +145,37 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Vec<IntentFilter>> {
                         }
                         "action" if intent_filter.is_some() => {
                             if let Some(action) = get_string_attribute(&e, "name", resources) {
-                                let mut intent_filter = intent_filter.as_mut().unwrap();
+                                let intent_filter = intent_filter.as_mut().unwrap();
                                 intent_filter.action.push(action);
                             }
                         }
                         "data" if intent_filter.is_some() => {
-                            let mut if_data = IntentFilterData::new();
-                            if_data.scheme = get_string_attribute(&e, "scheme", &resources);
-                            if_data.host = get_string_attribute(&e, "host", &resources);
-                            if_data.port = get_string_attribute(&e, "port", &resources);
-                            if_data.path = get_string_attribute(&e, "path", &resources);
-                            if_data.path_prefix = get_string_attribute(&e, "pathPrefix", &resources);
-                            if_data.path_pattern = get_string_attribute(&e, "pathPattern", &resources);
-                            let mut intent_filter = intent_filter.as_mut().unwrap();
-                            intent_filter.data.push(if_data);
+                            if let Some(mut intent_filter) = intent_filter.as_mut() {
+                                if let Some(scheme) = get_string_attribute(&e, "scheme", &resources) {
+                                    intent_filter.schemes.push(scheme);
+                                }
+
+                                if let Some(host) = get_string_attribute(&e, "host", &resources) {
+                                    intent_filter.authorities.push(Authority { 
+                                        host, 
+                                        port: get_int_attribute(&e, "port", &resources) 
+                                    });
+                                }
+
+                                if let Some(p) = get_string_attribute(&e, "path", &resources) {
+                                    intent_filter.path_matchers.push(PathMatcher::Literal(p));
+                                }
+                                if let Some(p) = get_string_attribute(&e, "pathPrefix", &resources) {
+                                    intent_filter.path_matchers.push(PathMatcher::Prefix(p));
+                                }
+                                if let Some(p) = get_string_attribute(&e, "pathPattern", &resources) {
+                                    intent_filter.path_matchers.push(PathMatcher::Literal(p));
+                                }
+                            }
                         }
                         "category" if intent_filter.is_some() => {
                             if let Some(action) = get_string_attribute(&e, "name", resources) {
-                                let mut intent_filter = intent_filter.as_mut().unwrap();
+                                let intent_filter = intent_filter.as_mut().unwrap();
                                 intent_filter.category.push(action);
                             }
                         }
@@ -145,7 +199,7 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Vec<IntentFilter>> {
             }
         }
     }
-    Ok(res)
+    Ok(Manifest { intent_filters: res })
 }
 
 fn get_string_attribute(element: &ElementStart, field_name: &str, resources: &Resources) -> Option<String> {
@@ -181,4 +235,19 @@ fn get_intent_filter_auto_verify(intent_filter: &ElementStart) -> bool {
     }
 
     false
+}
+
+
+fn get_int_attribute(element: &ElementStart, field_name: &str, resources: &Resources) -> Option<i32> {
+    if element.attribute_len() > 0 {
+        for a in element.attributes.as_ref().unwrap() {
+            if a.name == field_name {
+                if let TypedValue::IntDecimal(d) = a.value {
+                    return Some(d);
+                }
+            }
+        }
+    }
+
+    None
 }
