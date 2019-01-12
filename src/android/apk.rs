@@ -8,11 +8,18 @@ use apk_rs::resources::resources::is_package_reference;
 use apk_rs::typedvalue::TypedValue;
 use apk_rs::axml::ElementStart;
 use apk_rs::resources::resources::Resources;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Authority {
     host: String,
-    port: Option<i32>,
+    port: Option<u16>,
+}
+
+impl Authority {
+    fn matches(&self, host: &str, port: Option<u16>) -> bool {
+        self.host == host.to_string() && self.port == port
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +27,16 @@ enum PathMatcher {
     Literal(String),
     Prefix(String),
     Pattern(Regex),
+}
+
+impl PathMatcher {
+    fn matches(&self, path: &str) -> bool {
+        match self {
+            PathMatcher::Literal(p) => p == path,
+            PathMatcher::Prefix(pre) => path.starts_with(pre),
+            _ => false // TODO: implement PatternMatcher
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -47,17 +64,68 @@ impl IntentFilter {
     }
 
     fn is_relevant(&self) -> bool {
-        (self.schemes.contains(&"http".to_string()) || self.schemes.contains(&"https".to_string()))
+        self.contains_http_scheme()
         && self.action.contains(&"android.intent.action.VIEW".to_string()) 
         && self.category.contains(&"android.intent.category.BROWSABLE".to_string())
     }
 
+    fn contains_http_scheme(&self) -> bool {
+        self.schemes.contains(&"http".to_string()) || self.schemes.contains(&"https".to_string())
+    }
+
+    fn contains_non_http_scheme(&self) -> bool {
+        self.schemes.iter().filter(|&s| *s != "http".to_string() && *s != "https".to_string()).next().is_some()
+    }
+
     fn matches_url(&self, url: Uri) -> bool {
-        // self.schemes.contains(url.scheme())
-        // self.authorities.contains(url.host() + url.port())
-        // for m in self.path_matchers { m.match(url.path) }
+        if let Some(scheme) = url.scheme_part() {
+            if !self.schemes.contains(&scheme.to_string()) {
+                return false;
+            }
+        }
+
+        let mut auth_matches = false;
+        if let Some(auth) = url.authority_part() {
+            for authority in &self.authorities {
+                if authority.matches(auth.host(), auth.port()) {
+                    auth_matches = true;
+                    break;
+                }
+            }
+            if !auth_matches {
+                return false;
+            }
+        }
+
+        let mut path_matches = false;
+        for matcher in &self.path_matchers {
+            if matcher.matches(url.path()) {
+                path_matches = true;
+            }
+        }
+        if !path_matches {
+            return false;
+        }
+
         true
     }
+}
+
+#[test]
+fn test_intent_filter_matching() {
+    let filter = IntentFilter {
+        activity_name: "foo".to_string(),
+        auto_verify: true,
+        action: vec!["android.intent.action.VIEW".to_string()],
+        category: vec!["android.intent.category.BROWSABLE".to_string()],
+        schemes: vec!["http".to_string(), "https".to_string()],
+        authorities: vec![Authority { host: "example.com".to_string(), port: None }],
+        path_matchers: vec![PathMatcher::Literal("/bar".to_string()), PathMatcher::Literal("/baz".to_string())],
+    };
+    assert!(filter.is_relevant());
+    assert!(filter.matches_url(Uri::from_str("http://example.com/bar").unwrap()));
+    assert!(!filter.matches_url(Uri::from_str("http://exemple.com/bar").unwrap()));
+    assert!(!filter.matches_url(Uri::from_str("http://example.com:8080/bar").unwrap()));
 }
 
 #[derive(Debug)]
@@ -98,6 +166,7 @@ impl Manifest {
 enum Problem {
     InvalidApk,
     MissingAutoVerifyInManifest,
+    IntentFilterContainsHttpAndCustomScheme(IntentFilter), // if an intent-filter contains http and non http schemes, the hosts in that intent-filter will not be autoverified
     NoMatchingIntenFilter,
     MultipleMatchingIntentFilters
 
@@ -156,9 +225,16 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Manifest> {
                                 }
 
                                 if let Some(host) = get_string_attribute(&e, "host", &resources) {
+                                    let p =get_int_attribute(&e, "port", &resources);
+                                    let port = if let Some(p) = get_int_attribute(&e, "port", &resources) {
+                                        Some(p as u16)
+                                    } else {
+                                        None
+                                    };
+
                                     intent_filter.authorities.push(Authority { 
                                         host, 
-                                        port: get_int_attribute(&e, "port", &resources) 
+                                        port,
                                     });
                                 }
 
