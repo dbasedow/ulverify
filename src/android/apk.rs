@@ -7,7 +7,7 @@ use apk_rs::typedvalue::TypedValue;
 use apk_rs::axml::ElementStart;
 use apk_rs::resources::resources::Resources;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IntentFilterData {
     scheme: Option<String>,
     host: Option<String>,
@@ -30,13 +30,13 @@ impl IntentFilterData {
     }
 }
 
-#[derive(Debug)]
-struct IntentFilter {
+#[derive(Debug, Clone)]
+pub struct IntentFilter {
     activity_name: String,
-    pub action: Vec<String>,
+    action: Vec<String>,
     category: Vec<String>,
     auto_verify: bool,
-    data: Option<Vec<IntentFilterData>>,
+    data: Vec<IntentFilterData>,
 }
 
 impl IntentFilter {
@@ -46,8 +46,12 @@ impl IntentFilter {
             action: Vec::new(),
             category: Vec::new(),
             auto_verify,
-            data: None,
+            data: Vec::new(),
         }
+    }
+
+    fn is_relevant(&self) -> bool {
+        self.action.contains(&"android.intent.action.VIEW".to_string()) && self.category.contains(&"android.intent.category.BROWSABLE".to_string())
     }
 }
 
@@ -65,18 +69,18 @@ pub struct CheckResult {
     intent_filter: Vec<IntentFilter>,
 }
 
-pub fn check_apk(file_name: &str) -> io::Result<Vec<IntentFilterData>> {
+pub fn check_apk(file_name: &str) -> io::Result<Vec<IntentFilter>> {
     let apk_file = Apk::open(file_name)?;
     parse_manifest(&apk_file)
 }
 
-pub fn parse_manifest(apk: &Apk) -> io::Result<Vec<IntentFilterData>> {
+pub fn parse_manifest(apk: &Apk) -> io::Result<Vec<IntentFilter>> {
     let f = apk.file_by_name("AndroidManifest.xml")?;
     if f.is_none() {
         return Err(io::Error::new(io::ErrorKind::NotFound, "AndroidManifest.xml not found"));
     }
     let f = f.unwrap();
-    let mut res: Vec<IntentFilterData> = Vec::new();
+    let mut res: Vec<IntentFilter> = Vec::new();
     let mut data = Vec::with_capacity(f.len());
     let mut rdr = f.content()?;
     rdr.read_to_end(&mut data)?;
@@ -91,7 +95,8 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Vec<IntentFilterData>> {
                 XmlEvent::ElementStart(e) => {
                     match &e.name[..] {
                         "activity" => activity = Some(e),
-                        "intent-filter" => {
+                        "activity-alias" => activity = Some(e),
+                        "intent-filter" if activity.is_some() => { // in case of intent-filter in <service> or <receiver> activity will be None
                             let activity_name = get_string_attribute(&activity.as_ref().unwrap(), "name", resources);
                             if let Some(activity_name) = activity_name {
                                 intent_filter = Some(IntentFilter::new(activity_name, get_intent_filter_auto_verify(&e)));
@@ -103,18 +108,38 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Vec<IntentFilterData>> {
                                 intent_filter.action.push(action);
                             }
                         }
-                        "data" if intent_filter.is_some() => {} //TODO: implement
+                        "data" if intent_filter.is_some() => {
+                            let mut if_data = IntentFilterData::new();
+                            if_data.scheme = get_string_attribute(&e, "scheme", &resources);
+                            if_data.host = get_string_attribute(&e, "host", &resources);
+                            if_data.port = get_string_attribute(&e, "port", &resources);
+                            if_data.path = get_string_attribute(&e, "path", &resources);
+                            if_data.path_prefix = get_string_attribute(&e, "pathPrefix", &resources);
+                            if_data.path_pattern = get_string_attribute(&e, "pathPattern", &resources);
+                            let mut intent_filter = intent_filter.as_mut().unwrap();
+                            intent_filter.data.push(if_data);
+                        }
                         "category" if intent_filter.is_some() => {
                             if let Some(action) = get_string_attribute(&e, "name", resources) {
                                 let mut intent_filter = intent_filter.as_mut().unwrap();
                                 intent_filter.category.push(action);
                             }
-                        } //TODO: implement
+                        }
                         _ => {}
                     }
                 }
                 XmlEvent::ElementEnd(e) => {
-                    println!("</{}>", e.name);
+                    match &e.name[..] {
+                        "activity" => activity = None,
+                        "intent-filter" => {
+                            if let Some(ref intent_filter) = intent_filter {
+                                if intent_filter.is_relevant() {
+                                    res.push(intent_filter.clone());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 _ => {}
             }
