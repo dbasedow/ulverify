@@ -9,6 +9,8 @@ use apk_rs::typedvalue::TypedValue;
 use apk_rs::axml::ElementStart;
 use apk_rs::resources::resources::Resources;
 use std::str::FromStr;
+use std::collections::HashMap;
+use crate::android::assetlinks::Assetlink;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Authority {
@@ -26,7 +28,7 @@ impl Authority {
 enum PathMatcher {
     Literal(String),
     Prefix(String),
-    Pattern(Regex),
+    Pattern(String),
 }
 
 impl PathMatcher {
@@ -63,8 +65,8 @@ fn match_pattern(path: &str, pattern: &str) -> bool {
         }
         if next_char == '*' {
             if !escaped && c == '.' {
-                if ip >= np-1 {
-                 return true;
+                if ip >= np - 1 {
+                    return true;
                 }
                 ip += 1;
 
@@ -115,7 +117,7 @@ fn match_pattern(path: &str, pattern: &str) -> bool {
     }
     if ip == np - 2 && pattern[ip] == '.' && pattern[ip + 1] == '*' {
         return true;
-    } 
+    }
 
     false
 }
@@ -123,7 +125,7 @@ fn match_pattern(path: &str, pattern: &str) -> bool {
 #[test]
 fn test_match_pattern() {
     assert!(match_pattern("/", "/"));
-    assert!(!match_pattern("/foo", "/bar"));    
+    assert!(!match_pattern("/foo", "/bar"));
     assert!(match_pattern("/", "/*"));
     assert!(!match_pattern("/foo", "/*")); // would match any number of slashes
     assert!(match_pattern("/foo", "/.*"));
@@ -139,7 +141,7 @@ pub struct IntentFilter {
     auto_verify: bool,
     schemes: Vec<String>,
     authorities: Vec<Authority>,
-    path_matchers: Vec<PathMatcher>
+    path_matchers: Vec<PathMatcher>,
 }
 
 impl IntentFilter {
@@ -157,8 +159,8 @@ impl IntentFilter {
 
     fn is_relevant(&self) -> bool {
         self.contains_http_scheme()
-        && self.action.contains(&"android.intent.action.VIEW".to_string()) 
-        && self.category.contains(&"android.intent.category.BROWSABLE".to_string())
+            && self.action.contains(&"android.intent.action.VIEW".to_string())
+            && self.category.contains(&"android.intent.category.BROWSABLE".to_string())
     }
 
     fn contains_http_scheme(&self) -> bool {
@@ -222,16 +224,11 @@ fn test_intent_filter_matching() {
 
 #[derive(Debug)]
 pub struct Manifest {
+    app_id: Option<String>,
     intent_filters: Vec<IntentFilter>,
 }
 
 impl Manifest {
-    fn new() -> Self {
-        Self {
-            intent_filters: Vec::new(),
-        }
-    }
-
     pub fn has_auto_verify(&self) -> bool {
         self.intent_filters
             .iter()
@@ -255,25 +252,31 @@ impl Manifest {
 }
 
 #[derive(Debug)]
-enum Problem {
+pub enum Problem {
     InvalidApk,
     MissingAutoVerifyInManifest,
-    IntentFilterContainsHttpAndCustomScheme(IntentFilter), // if an intent-filter contains http and non http schemes, the hosts in that intent-filter will not be autoverified
+    IntentFilterContainsHttpAndCustomScheme(IntentFilter),
+    // if an intent-filter contains http and non http schemes, the hosts in that intent-filter will not be autoverified
     NoMatchingIntenFilter,
-    MultipleMatchingIntentFilters
-
+    MultipleMatchingIntentFilters,
 }
 
 #[derive(Debug)]
 pub struct CheckResult {
-    app_id: String,
-    signature: Vec<u8>,
-    intent_filter: Vec<IntentFilter>,
+    sha256_fingerprint: Option<Vec<u8>>,
+    pub manifest: Option<Manifest>,
+    assetlinks: HashMap<String, Vec<Assetlink>>,
 }
 
-pub fn check_apk(file_name: &str) -> io::Result<Manifest> {
+pub fn check_apk(file_name: &str) -> io::Result<CheckResult> {
     let apk_file = Apk::open(file_name)?;
-    parse_manifest(&apk_file)
+    let manifest = parse_manifest(&apk_file)?;
+    let check_result = CheckResult {
+        sha256_fingerprint: None,
+        manifest: Some(manifest),
+        assetlinks: HashMap::new(),
+    };
+    Ok(check_result)
 }
 
 pub fn parse_manifest(apk: &Apk) -> io::Result<Manifest> {
@@ -287,6 +290,7 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Manifest> {
     let mut rdr = f.content()?;
     rdr.read_to_end(&mut data)?;
     let resources = apk.get_resources().unwrap();
+    let mut app_id: Option<String> = None;
 
 
     if let Ok(it) = XmlElementStream::new(&data) {
@@ -296,6 +300,7 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Manifest> {
             match e {
                 XmlEvent::ElementStart(e) => {
                     match &e.name[..] {
+                        "manifest" => app_id = get_string_attribute(&e, "package", &resources),
                         "activity" => activity = Some(e),
                         "activity-alias" => activity = Some(e),
                         "intent-filter" if activity.is_some() => { // in case of intent-filter in <service> or <receiver> activity will be None
@@ -313,21 +318,26 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Manifest> {
                         "data" if intent_filter.is_some() => {
                             if let Some(mut intent_filter) = intent_filter.as_mut() {
                                 if let Some(scheme) = get_string_attribute(&e, "scheme", &resources) {
-                                    intent_filter.schemes.push(scheme);
+                                    if !intent_filter.schemes.contains(&scheme) {
+                                        intent_filter.schemes.push(scheme);
+                                    }
                                 }
 
                                 if let Some(host) = get_string_attribute(&e, "host", &resources) {
-                                    let p =get_int_attribute(&e, "port", &resources);
+                                    let p = get_int_attribute(&e, "port", &resources);
                                     let port = if let Some(p) = get_int_attribute(&e, "port", &resources) {
                                         Some(p as u16)
                                     } else {
                                         None
                                     };
 
-                                    intent_filter.authorities.push(Authority { 
-                                        host, 
+                                    let authority = Authority {
+                                        host,
                                         port,
-                                    });
+                                    };
+                                    if !intent_filter.authorities.contains(&authority) {
+                                        intent_filter.authorities.push(authority);
+                                    }
                                 }
 
                                 if let Some(p) = get_string_attribute(&e, "path", &resources) {
@@ -367,7 +377,7 @@ pub fn parse_manifest(apk: &Apk) -> io::Result<Manifest> {
             }
         }
     }
-    Ok(Manifest { intent_filters: res })
+    Ok(Manifest { app_id, intent_filters: res })
 }
 
 fn get_string_attribute(element: &ElementStart, field_name: &str, resources: &Resources) -> Option<String> {
