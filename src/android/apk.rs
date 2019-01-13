@@ -34,9 +34,101 @@ impl PathMatcher {
         match self {
             PathMatcher::Literal(p) => p == path,
             PathMatcher::Prefix(pre) => path.starts_with(pre),
-            _ => false // TODO: implement PatternMatcher
+            PathMatcher::Pattern(pattern) => match_pattern(path, pattern),
         }
     }
+}
+
+// algorithm from: https://github.com/aosp-mirror/platform_frameworks_base/blob/6bebb8418ceecf44d2af40033870f3aabacfe36e/core/java/android/os/PatternMatcher.java
+fn match_pattern(path: &str, pattern: &str) -> bool {
+    if pattern.len() == 0 {
+        return path.len() == 0;
+    }
+    let pattern: Vec<char> = pattern.chars().collect();
+    let path: Vec<char> = path.chars().collect();
+    let np = pattern.len();
+    let nm = path.len();
+    let mut ip = 0;
+    let mut im = 0;
+    let mut next_char = pattern[0];
+    while ip < np && im < nm {
+        let mut c = next_char;
+        ip += 1;
+        next_char = if ip < np { pattern[ip] } else { 0 as char };
+        let escaped = c == '\\';
+        if escaped {
+            c = next_char;
+            ip += 1;
+            next_char = if ip < np { pattern[ip] } else { 0 as char };
+        }
+        if next_char == '*' {
+            if !escaped && c == '.' {
+                if ip >= np-1 {
+                 return true;
+                }
+                ip += 1;
+
+                next_char = pattern[ip];
+
+                if next_char == '\\' {
+                    ip += 1;
+                    next_char = if ip < np { pattern[ip] } else { 0 as char };
+                }
+                loop {
+                    if path[im] == next_char {
+                        break;
+                    }
+                    im += 1;
+                    if im >= nm {
+                        break;
+                    }
+                }
+                if im == nm {
+                    return false;
+                }
+                ip += 1;
+                next_char = if ip < np { pattern[ip] } else { 0 as char };
+                im += 1;
+            } else {
+                loop {
+                    if path[im] != c {
+                        break;
+                    }
+                    im += 1;
+                    if im >= nm {
+                        break;
+                    }
+                }
+                ip += 1;
+                next_char = if ip < np { pattern[ip] } else { 0 as char };
+            }
+        } else {
+            if c != '.' && path[im] != c {
+                return false;
+            }
+            im += 1;
+        }
+    }
+
+    if ip >= np && im >= nm {
+        return true;
+    }
+    if ip == np - 2 && pattern[ip] == '.' && pattern[ip + 1] == '*' {
+        return true;
+    } 
+
+    false
+}
+
+#[test]
+fn test_match_pattern() {
+    assert!(match_pattern("/", "/"));
+    assert!(!match_pattern("/foo", "/bar"));    
+    assert!(match_pattern("/", "/*"));
+    assert!(!match_pattern("/foo", "/*")); // would match any number of slashes
+    assert!(match_pattern("/foo", "/.*"));
+    assert!(!match_pattern("/foo/bar/baz", "/.*/bar")); // this is what android does...
+    assert!(!match_pattern("/foobarbaz", "/f.*baz")); // counter intuitive, but this is what android does...
 }
 
 #[derive(Debug, Clone)]
